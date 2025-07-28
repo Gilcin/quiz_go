@@ -1,4 +1,4 @@
-module quis_go
+module quiz_go
 
 go 1.24.5
 
