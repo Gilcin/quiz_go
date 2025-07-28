@@ -1,10 +1,14 @@
 package quiz
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
 	"strings"
 	"time"
-	"fmt"
 
 	"quiz_go/internal/ui"
 	"quiz_go/internal/stats"
@@ -24,15 +28,44 @@ type Questao struct {
 }
 
 type Quiz struct {
-	questoes  []Questao
-	stats stats.Estatisticas
-	statsFile string
+	questoes     []Questao
+	stats        stats.Estatisticas
+	statsFile    string
+	ollamaURL    string
+	ollamaModel  string
+	usarOllama   bool
+}
+
+// Estrutura para requisição ao Ollama
+type OllamaRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool   `json:"stream"`
+}
+
+type OllamaResponse struct {
+	Response string `json:"response"`
+	Done     bool   `json:"done"`
+}
+
+// Estrutura esperada da resposta da IA para questões
+type QuestaoGerada struct {
+	Questao     string   `json:"questao"`
+	Opcoes      []string `json:"opcoes"`
+	Resposta    string   `json:"resposta"`
+	Explicacao  string   `json:"explicacao"`
+	Dificuldade string   `json:"dificuldade"`
+	Categoria   string   `json:"categoria"`
 }
 
 func NewQuiz() *Quiz {
 	q := &Quiz{
-		statsFile: "quiz_stats.json",
+		statsFile:   "quiz_stats.json",
+		ollamaURL:   "http://localhost:11434/api/generate",
+		ollamaModel: "llama3.2", // Pode ser alterado conforme o modelo disponível
+		usarOllama:  true,
 		questoes: []Questao{
+			// Questões de fallback caso o Ollama não esteja disponível
 			{
 				ID:          1,
 				Questao:     "Qual palavra-chave define uma função em Go?",
@@ -51,79 +84,15 @@ func NewQuiz() *Quiz {
 				Dificuldade: "facil",
 				Categoria:   "tipos",
 			},
-			{
-				ID:          3,
-				Questao:     "Qual pacote padrão usamos para imprimir no terminal?",
-				Opcoes:      []string{"io", "os", "fmt", "print"},
-				Resposta:    "fmt",
-				Explicacao:  "O pacote 'fmt' fornece funções para formatação de I/O, incluindo Print, Printf e Println.",
-				Dificuldade: "facil",
-				Categoria:   "bibliotecas",
-			},
-			{
-				ID:          4,
-				Questao:     "Como criar um slice em Go?",
-				Opcoes:      []string{"var s []int", "s := make([]int, 0)", "s := []int{}", "Todas as anteriores"},
-				Resposta:    "Todas as anteriores",
-				Explicacao:  "Go oferece múltiplas formas de criar slices: declaração zero, make() e literal.",
-				Dificuldade: "medio",
-				Categoria:   "tipos",
-			},
-			{
-				ID:          5,
-				Questao:     "Qual é o valor zero de um ponteiro em Go?",
-				Opcoes:      []string{"0", "null", "nil", "undefined"},
-				Resposta:    "nil",
-				Explicacao:  "Em Go, 'nil' é o valor zero para ponteiros, interfaces, maps, slices, channels e funções.",
-				Dificuldade: "medio",
-				Categoria:   "tipos",
-			},
-			{
-				ID:          6,
-				Questao:     "Como criar uma goroutine em Go?",
-				Opcoes:      []string{"go funcao()", "async funcao()", "thread funcao()", "spawn funcao()"},
-				Resposta:    "go funcao()",
-				Explicacao:  "A palavra-chave 'go' inicia uma nova goroutine, executando a função concorrentemente.",
-				Dificuldade: "medio",
-				Categoria:   "concorrencia",
-			},
-			{
-				ID:          7,
-				Questao:     "Qual é a forma correta de criar um channel em Go?",
-				Opcoes:      []string{"ch := channel(int)", "ch := make(chan int)", "ch := new(chan int)", "ch := chan int{}"},
-				Resposta:    "ch := make(chan int)",
-				Explicacao:  "Channels são criados usando make(chan tipo). Eles são fundamentais para comunicação entre goroutines.",
-				Dificuldade: "medio",
-				Categoria:   "concorrencia",
-			},
-			{
-				ID:          8,
-				Questao:     "O que é um interface{} em Go?",
-				Opcoes:      []string{"Um tipo genérico", "Interface vazia que aceita qualquer tipo", "Um erro", "Uma função"},
-				Resposta:    "Interface vazia que aceita qualquer tipo",
-				Explicacao:  "interface{} é a interface vazia, satisfeita por qualquer tipo. É similar ao 'any' em outras linguagens.",
-				Dificuldade: "dificil",
-				Categoria:   "interfaces",
-			},
-			{
-				ID:          9,
-				Questao:     "Como tratar erros idiomaticamente em Go?",
-				Opcoes:      []string{"try/catch", "if err != nil", "throw/catch", "error handling"},
-				Resposta:    "if err != nil",
-				Explicacao:  "Go não tem exceções. Erros são valores que devem ser verificados explicitamente com 'if err != nil'.",
-				Dificuldade: "medio",
-				Categoria:   "erros",
-			},
-			{
-				ID:          10,
-				Questao:     "Qual é a diferença entre array e slice em Go?",
-				Opcoes:      []string{"Não há diferença", "Arrays têm tamanho fixo, slices são dinâmicos", "Slices são mais lentos", "Arrays são obsoletos"},
-				Resposta:    "Arrays têm tamanho fixo, slices são dinâmicos",
-				Explicacao:  "Arrays têm tamanho fixo definido no tipo [5]int, enquanto slices []int são dinâmicos e mais flexíveis.",
-				Dificuldade: "dificil",
-				Categoria:   "tipos",
-			},
 		},
+	}
+
+	// Verificar se o Ollama está disponível
+	if !q.testarConexaoOllama() {
+		fmt.Println(ui.Yellow("⚠️  Ollama não está disponível. Usando questões pré-definidas."))
+		q.usarOllama = false
+	} else {
+		fmt.Println(ui.Green("✅ Ollama conectado! Questões serão geradas dinamicamente."))
 	}
 
 	loadedStats, err := stats.CarregarEstatisticas(q.statsFile)
@@ -133,6 +102,189 @@ func NewQuiz() *Quiz {
 		q.stats = loadedStats
 	}
 	return q
+}
+
+func (q *Quiz) testarConexaoOllama() bool {
+	client := &http.Client{Timeout: 5 * time.Second}
+	
+	reqBody := OllamaRequest{
+		Model:  q.ollamaModel,
+		Prompt: "test",
+		Stream: false,
+	}
+	
+	jsonData, _ := json.Marshal(reqBody)
+	resp, err := client.Post(q.ollamaURL, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	
+	return resp.StatusCode == 200
+}
+
+func (q *Quiz) gerarQuestaoComOllama(dificuldade, categoria string) (*Questao, error) {
+	prompt := fmt.Sprintf(`Gere uma questão de múltipla escolha sobre programação Go com as seguintes especificações:
+
+Dificuldade: %s
+Categoria: %s
+
+Retorne APENAS um JSON válido no seguinte formato:
+{
+  "questao": "Texto da pergunta aqui",
+  "opcoes": ["opção 1", "opção 2", "opção 3", "opção 4"],
+  "resposta": "resposta correta exata (deve ser uma das opções)",
+  "explicacao": "Explicação detalhada da resposta",
+  "dificuldade": "%s",
+  "categoria": "%s"
+}
+
+Requisitos:
+- A questão deve ser sobre Go/Golang
+- Deve ter exatamente 4 opções
+- Uma resposta deve estar correta
+- A explicação deve ser educativa
+- Use português brasileiro
+- Não inclua texto adicional, apenas o JSON`, dificuldade, categoria, dificuldade, categoria)
+
+	reqBody := OllamaRequest{
+		Model:  q.ollamaModel,
+		Prompt: prompt,
+		Stream: false,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao serializar requisição: %v", err)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(q.ollamaURL, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("erro ao conectar com Ollama: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao ler resposta: %v", err)
+	}
+
+	var ollamaResp OllamaResponse
+	if err := json.Unmarshal(body, &ollamaResp); err != nil {
+		return nil, fmt.Errorf("erro ao decodificar resposta do Ollama: %v", err)
+	}
+
+	// Tentar extrair JSON da resposta
+	response := strings.TrimSpace(ollamaResp.Response)
+	
+	// Encontrar o JSON na resposta (às vezes a IA adiciona texto extra)
+	startIdx := strings.Index(response, "{")
+	endIdx := strings.LastIndex(response, "}")
+	
+	if startIdx == -1 || endIdx == -1 {
+		return nil, fmt.Errorf("JSON não encontrado na resposta")
+	}
+	
+	jsonStr := response[startIdx : endIdx+1]
+
+	var questaoGerada QuestaoGerada
+	if err := json.Unmarshal([]byte(jsonStr), &questaoGerada); err != nil {
+		return nil, fmt.Errorf("erro ao decodificar questão gerada: %v", err)
+	}
+
+	// Validar a questão gerada
+	if err := q.validarQuestao(&questaoGerada); err != nil {
+		return nil, fmt.Errorf("questão inválida: %v", err)
+	}
+
+	questao := &Questao{
+		ID:          rand.Intn(10000) + 1000, // ID aleatório
+		Questao:     questaoGerada.Questao,
+		Opcoes:      questaoGerada.Opcoes,
+		Resposta:    questaoGerada.Resposta,
+		Explicacao:  questaoGerada.Explicacao,
+		Dificuldade: questaoGerada.Dificuldade,
+		Categoria:   questaoGerada.Categoria,
+	}
+
+	return questao, nil
+}
+
+func (q *Quiz) validarQuestao(questao *QuestaoGerada) error {
+	if questao.Questao == "" {
+		return fmt.Errorf("questão vazia")
+	}
+	
+	if len(questao.Opcoes) != 4 {
+		return fmt.Errorf("deve ter exatamente 4 opções, encontradas: %d", len(questao.Opcoes))
+	}
+	
+	// Verificar se a resposta está entre as opções
+	respostaEncontrada := false
+	for _, opcao := range questao.Opcoes {
+		if strings.TrimSpace(opcao) == strings.TrimSpace(questao.Resposta) {
+			respostaEncontrada = true
+			break
+		}
+	}
+	
+	if !respostaEncontrada {
+		return fmt.Errorf("resposta '%s' não encontrada nas opções", questao.Resposta)
+	}
+	
+	return nil
+}
+
+func (q *Quiz) gerarQuestoes(quantidade int, dificuldade string) []Questao {
+	if !q.usarOllama {
+		return q.questoes
+	}
+
+	categorias := []string{"sintaxe", "tipos", "concorrencia", "bibliotecas", "interfaces", "erros", "estruturas"}
+	questoes := make([]Questao, 0, quantidade)
+
+	fmt.Printf("%s Gerando %d questões com IA...\n", ui.Magenta("🤖"), quantidade)
+	
+	// Barra de progresso
+	spinner, _ := pterm.DefaultSpinner.Start(ui.Cyan("Conectando com a IA..."))
+
+	for i := 0; i < quantidade; i++ {
+		categoria := categorias[rand.Intn(len(categorias))]
+		dif := dificuldade
+		
+		// Se não especificou dificuldade, escolher aleatoriamente
+		if dif == "" {
+			dificuldades := []string{"facil", "medio", "dificil"}
+			dif = dificuldades[rand.Intn(len(dificuldades))]
+		}
+
+		spinner.UpdateText(fmt.Sprintf("Gerando questão %d/%d - %s (%s)", i+1, quantidade, categoria, dif))
+
+		questao, err := q.gerarQuestaoComOllama(dif, categoria)
+		if err != nil {
+			fmt.Printf("\n%s Erro ao gerar questão %d: %v\n", ui.Red("❌"), i+1, err)
+			fmt.Printf("%s Usando questão pré-definida como fallback.\n", ui.Yellow("⚠️"))
+			
+			// Usar questão de fallback
+			if i < len(q.questoes) {
+				questoes = append(questoes, q.questoes[i])
+			}
+			continue
+		}
+
+		questoes = append(questoes, *questao)
+		time.Sleep(1 * time.Second) // Evitar sobrecarregar a API
+	}
+
+	if len(questoes) > 0 {
+		spinner.Success(fmt.Sprintf("✅ %d questões geradas pela IA!", len(questoes)))
+	} else {
+		spinner.Fail("❌ Falha ao gerar questões. Usando questões pré-definidas.")
+		return q.questoes
+	}
+
+	return questoes
 }
 
 func (q *Quiz) MostrarEstatisticas() {
@@ -169,20 +321,43 @@ func (q *Quiz) MostrarEstatisticas() {
 			ui.Bold(q.stats.UltimoQuiz))
 	}
 
+	if q.usarOllama {
+		fmt.Printf("%s Modo IA: %s (Modelo: %s)\n",
+			ui.Green("🤖"),
+			ui.Bold("ATIVO"),
+			ui.Bold(q.ollamaModel))
+	} else {
+		fmt.Printf("%s Modo IA: %s\n",
+			ui.Red("🤖"),
+			ui.Bold("DESATIVADO"))
+	}
+
 	fmt.Println()
 }
 
 func (q *Quiz) SelecionarModoJogo() string {
+	options := []string{
+		"🎯 Todas as questões (10 questões)",
+		"⚡ Quiz rápido (5 questões aleatórias)",
+		"🧠 Apenas questões difíceis",
+		"📊 Ver estatísticas",
+	}
+
+	// Adicionar opções específicas para IA se disponível
+	if q.usarOllama {
+		options = append([]string{
+			"🤖 IA: Quiz personalizado (5 questões geradas)",
+			"🎓 IA: Questões avançadas (3 questões difíceis)",
+			"🚀 IA: Desafio extremo (10 questões mistas)",
+		}, options...)
+	}
+
+	options = append(options, "❌ Sair")
+
 	var modo string
 	prompt := &survey.Select{
 		Message: "Escolha o modo de jogo:",
-		Options: []string{
-			"🎯 Todas as questões (10 questões)",
-			"⚡ Quiz rápido (5 questões aleatórias)",
-			"🧠 Apenas questões difíceis",
-			"📊 Ver estatísticas",
-			"❌ Sair",
-		},
+		Options: options,
 	}
 
 	survey.AskOne(prompt, &modo)
@@ -191,24 +366,39 @@ func (q *Quiz) SelecionarModoJogo() string {
 
 func (q *Quiz) FiltrarQuestoes(modo string) []Questao {
 	switch {
+	case strings.Contains(modo, "IA: Quiz personalizado"):
+		return q.gerarQuestoes(5, "")
+	case strings.Contains(modo, "IA: Questões avançadas"):
+		return q.gerarQuestoes(3, "dificil")
+	case strings.Contains(modo, "IA: Desafio extremo"):
+		return q.gerarQuestoes(10, "")
 	case strings.Contains(modo, "Todas as questões"):
+		if q.usarOllama {
+			return q.gerarQuestoes(10, "")
+		}
 		return q.questoes
 	case strings.Contains(modo, "Quiz rápido"):
+		if q.usarOllama {
+			return q.gerarQuestoes(5, "")
+		}
+		// Fallback para questões pré-definidas
 		questoesAleatorias := make([]Questao, len(q.questoes))
 		copy(questoesAleatorias, q.questoes)
 
-		// Embaralhar
 		rand.Seed(time.Now().UnixNano())
 		rand.Shuffle(len(questoesAleatorias), func(i, j int) {
 			questoesAleatorias[i], questoesAleatorias[j] = questoesAleatorias[j], questoesAleatorias[i]
 		})
 
-		// Retornar apenas 5
 		if len(questoesAleatorias) > 5 {
 			return questoesAleatorias[:5]
 		}
 		return questoesAleatorias
 	case strings.Contains(modo, "difíceis"):
+		if q.usarOllama {
+			return q.gerarQuestoes(5, "dificil")
+		}
+		// Fallback para questões pré-definidas
 		var dificeis []Questao
 		for _, q := range q.questoes {
 			if q.Dificuldade == "dificil" {
@@ -221,6 +411,7 @@ func (q *Quiz) FiltrarQuestoes(modo string) []Questao {
 	}
 }
 
+// O resto dos métodos permanecem iguais...
 func (q *Quiz) ExecutarQuiz(questoesSelecionadas []Questao) {
 	fmt.Println()
 	fmt.Printf("%s Você terá %s questões para responder!\n",
@@ -228,18 +419,10 @@ func (q *Quiz) ExecutarQuiz(questoesSelecionadas []Questao) {
 		ui.Bold(fmt.Sprintf("%d", len(questoesSelecionadas))))
 	fmt.Println()
 
-	// Barra de progresso para preparação
-	spinner, _ := pterm.DefaultSpinner.Start(ui.Cyan("Preparando o quiz..."))
-	// Simula um tempo de preparação
-	time.Sleep(time.Duration(len(questoesSelecionadas)) * 150 * time.Millisecond)
-	spinner.Success(pterm.Green("Quiz pronto!"))
-	fmt.Println()
-
 	score := 0
 	respostasCorretas := []bool{}
 	tempoInicio := time.Now()
 
-	// Loop das questões
 	for i, questao := range questoesSelecionadas {
 		ui.LimparTela()
 		fmt.Println(ui.Cyan("═══════════════════════════════════════════════════════════"))
@@ -276,17 +459,14 @@ func (q *Quiz) ExecutarQuiz(questoesSelecionadas []Questao) {
 			respostasCorretas = append(respostasCorretas, false)
 		}
 
-		// Mostrar explicação
 		fmt.Printf("%s %s\n", ui.Blue("💡 Explicação:"), questao.Explicacao)
 		fmt.Println()
 
-		// Mostrar progresso atual
 		if i < len(questoesSelecionadas)-1 {
 			fmt.Printf(ui.Magenta("📊 Progresso: %d/%d questões | Acertos: %d\n"),
 				i+1, len(questoesSelecionadas), score)
 			fmt.Println()
 
-			// Perguntar se quer continuar
 			var continuar bool
 			continuePrompt := &survey.Confirm{
 				Message: "Continuar para a próxima questão?",
@@ -327,9 +507,7 @@ func (q *Quiz) MostrarResultados(score, total int, respostasCorretas []bool, tem
 	fmt.Println(ui.Cyan("╚══════════════════════════════════════════════════════════╝"))
 	fmt.Println()
 
-	// Barra de progresso dos resultados
 	spinner, _ := pterm.DefaultSpinner.Start(ui.Magenta("Calculando resultados..."))
-	// Simula um tempo de cálculo
 	time.Sleep(2 * time.Second)
 	spinner.Success(pterm.Green("Cálculos finalizados!"))
 	fmt.Println()
@@ -355,7 +533,6 @@ func (q *Quiz) MostrarResultados(score, total int, respostasCorretas []bool, tem
 
 	fmt.Println()
 
-	// Mostrar resumo das respostas
 	fmt.Println(ui.Cyan("📋 Resumo das suas respostas:"))
 	for i, correto := range respostasCorretas {
 		status := ui.Red("❌")
@@ -366,7 +543,6 @@ func (q *Quiz) MostrarResultados(score, total int, respostasCorretas []bool, tem
 	}
 	fmt.Println()
 
-	// Mensagem final baseada na performance
 	q.MostrarMensagemFinal(score, total, percentual)
 }
 
