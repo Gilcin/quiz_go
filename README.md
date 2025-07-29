@@ -1,6 +1,6 @@
 # Go Quiz CLI 🚀
 
-Um quiz interativo de linha de comando sobre a linguagem de programação Go. Teste seus conhecimentos com questões que vão do básico ao avançado, geradas dinamicamente por uma IA local com Ollama ou usando um conjunto de questões pré-definidas.
+Um quiz interativo de linha de comando sobre a linguagem de programação Go. Criado como estudo e para estudar. Teste seus conhecimentos com questões que vão do básico ao avançado, geradas dinamicamente por uma IA local com Ollama ou usando um conjunto de questões pré-definidas.
 
  <!-- Substitua por um GIF de demonstração do seu app -->
 
