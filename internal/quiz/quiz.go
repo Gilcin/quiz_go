@@ -62,7 +62,7 @@ func NewQuiz() *Quiz {
 	q := &Quiz{
 		statsFile:   "quiz_stats.json",
 		ollamaURL:   "http://localhost:11434/api/generate",
-		ollamaModel: "llama3.2", // Pode ser alterado conforme o modelo disponível
+		ollamaModel: "llama3:8b", // Pode ser alterado conforme o modelo disponível
 		usarOllama:  true,
 		questoes: []Questao{
 			// Questões de fallback caso o Ollama não esteja disponível
@@ -143,7 +143,7 @@ Requisitos:
 - A questão deve ser sobre Go/Golang
 - Deve ter exatamente 4 opções
 - Uma resposta deve estar correta
-- A explicação deve ser educativa
+- A explicação deve ser educativa e de simples entendimento
 - Use português brasileiro
 - Não inclua texto adicional, apenas o JSON`, dificuldade, categoria, dificuldade, categoria)
 
@@ -241,7 +241,7 @@ func (q *Quiz) gerarQuestoes(quantidade int, dificuldade string) []Questao {
 		return q.questoes
 	}
 
-	categorias := []string{"sintaxe", "tipos", "concorrencia", "bibliotecas", "interfaces", "erros", "estruturas"}
+	categorias := []string{"sintaxe", "tipos", "concorrencia", "bibliotecas", "interfaces", "erros", "estruturas", "Goroutines", "testes", "garbage collector", "banco de dados", "segurança e boas práticas"}
 	questoes := make([]Questao, 0, quantidade)
 
 	fmt.Printf("%s Gerando %d questões com IA...\n", ui.Magenta("🤖"), quantidade)
